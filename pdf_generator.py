@@ -171,7 +171,7 @@ def generate_pdf(data: QuoteData) -> bytes:
 
     # ── Table note ──
     if data.table_note:
-        y -= 8
+        y -= 20
         for note_line in data.table_note.split('\n'):
             if not note_line.strip():
                 continue
