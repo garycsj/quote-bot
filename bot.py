@@ -84,6 +84,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename=filename,
             caption=f'✅ {data.doc_title} — {customer}\n共 {len(data.items)} 項品項',
         )
+
+        # Upload customer info to Google Drive
+        try:
+            from gdrive import upload_customer_info
+            folder_name = upload_customer_info(data)
+            await update.message.reply_text(
+                f'📁 客戶資料已上傳至 Google Drive\n'
+                f'資料夾：客戶資料/{folder_name}/'
+            )
+        except Exception as gdrive_err:
+            logger.error(f'Google Drive upload error: {gdrive_err}', exc_info=True)
+            await update.message.reply_text(f'⚠️ PDF 已生成，但客戶資料上傳 Google Drive 失敗：{gdrive_err}')
+
     except Exception as e:
         logger.error(f'Error generating PDF: {e}', exc_info=True)
         await update.message.reply_text(f'❌ 生成 PDF 時發生錯誤：{e}')
