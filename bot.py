@@ -10,7 +10,7 @@ from telegram.ext import (
     filters, ContextTypes,
 )
 
-from parser import parse_raw
+from parser import parse_raw, QuoteData
 from pdf_generator import generate_pdf
 
 logging.basicConfig(
