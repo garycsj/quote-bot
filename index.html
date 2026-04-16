@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>報價單生成器 — 興霖事業有限公司</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',sans-serif;background:#e5e7eb}
+
+/* ── Buttons ── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 16px;border-radius:8px;border:none;cursor:pointer;font-size:14px;font-weight:500;transition:all .15s;white-space:nowrap}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-success{background:#16a34a;color:#fff}.btn-success:hover{background:#15803d}
+.btn-ghost{background:transparent;color:#374151;border:1px solid #d1d5db}.btn-ghost:hover{background:#f9fafb}
+.btn-danger{background:transparent;color:#ef4444;border:1px solid #fca5a5;padding:6px 8px}.btn-danger:hover{background:#fef2f2}
+
+/* ── Form elements ── */
+input,textarea,select{width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;outline:none;background:#fff;color:#111;font-family:inherit}
+input:focus,textarea:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+label{display:block;font-size:12px;font-weight:500;color:#6b7280;margin-bottom:4px}
+.card{background:#fff;border-radius:10px;padding:14px;border:1px solid #e5e7eb;margin-bottom:12px}
+
+/* ── Tabs ── */
+.tab-btn{padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:14px;font-weight:500;transition:all .15s}
+.tab-btn.active{background:#eff6ff;color:#2563eb}
+.tab-btn:not(.active){background:transparent;color:#6b7280}.tab-btn:not(.active):hover{background:#f9fafb}
+
+/* ── A4 print area ── */
+.a4-wrap{background:#fff;box-shadow:0 4px 24px rgba(0,0,0,.18);width:210mm;height:297mm;position:relative;overflow:hidden;flex-shrink:0}
+.a4-content{width:210mm;min-height:297mm;padding:20mm 15mm;font-family:"PMingLiU","MingLiU","DFKai-SB","細明體","標楷體",serif;color:#000;transform-origin:top center;display:flex;flex-direction:column}
+.autofit-wrap{width:100%;overflow:hidden}
+.autofit-inner{white-space:nowrap;display:inline-block;transform-origin:left}
+table{border-collapse:collapse}
+th,td{border:1px solid #000;padding:5px 8px}
+
+/* ── Desktop layout ── */
+.desktop-layout{display:flex;height:100vh;overflow:hidden}
+.left-panel{width:360px;background:#fff;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.left-scroll{flex:1;overflow-y:auto;padding:16px}
+.preview-area{flex:1;overflow:auto;background:#e5e7eb;display:flex;justify-content:center;align-items:flex-start;padding:28px}
+
+/* ── Mobile layout ── */
+.mobile-layout{display:none;flex-direction:column;height:100vh}
+.mobile-preview{flex:1;overflow:auto;background:#e5e7eb;padding:12px;display:flex;justify-content:center}
+.mobile-preview-card{background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.18);width:100%;padding:14px;font-family:"PMingLiU","MingLiU","DFKai-SB",serif;font-size:11px;color:#000;line-height:1.7}
+.mobile-bottom{background:#fff;border-top:1px solid #e5e7eb}
+.mobile-action-bar{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid #f3f4f6}
+.mobile-drawer{overflow-y:auto;padding:12px;max-height:42vh}
+
+/* ── Responsive ── */
+@media(max-width:768px){
+  .desktop-layout{display:none}
+  .mobile-layout{display:flex}
+}
+
+/* ── Print ── */
+@media print{
+  body{background:#fff;overflow:visible;height:auto}
+  .desktop-layout,.mobile-layout,.left-panel,.preview-area,.mobile-bottom{display:none!important}
+  .print-zone{display:block!important}
+  @page{size:A4 portrait;margin:0}
+  .a4-wrap{width:210mm!important;height:297mm!important;overflow:hidden!important;box-shadow:none!important;margin:0 auto!important;page-break-after:avoid!important}
+  .a4-content{padding:20mm 15mm!important}
+}
+.print-zone{display:none}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const {useState, useEffect, useRef, useCallback} = React;
+
+/* ───────── Constants ───────── */
+const DEFAULT_REMARKS = [
+  "●以上單價未稅，營業稅 5%外加，付款票期 30 天。",
+  "●新品提供財產編列管理及車縫線加強服務，以延長使用年限。",
+  "●提供更換鈕扣、拉鍊及修補等服務，將酌收修補費。",
+  "●提供客用口布、台布、服務巾、擦拭口布、廚房專用抹布等布品租賃服務。",
+  "●提供廚衣、圍裙、客用口布、服務巾、擦拭口布及廚房專用抹布等客製化製作。",
+  "●全程使用負離子磁化軟水洗滌。",
+  "●服務滿一年可享免費製作店號布標、各項衣物之流水編號及車縫線加強等服務，未滿一年者將酌收服務費。"
+].join('\n');
+
+const SAMPLE_RAW = `新品報價單
+我司抬頭：珈烽事業有限公司
+抬頭：西天滿宮燒鳥股份有限公司
+品牌名稱：燒鳥 Sumika
+聯絡人：張堯欽 先生
+聯絡電話：02-2776-0005/0956-771-208
+地址：台北市大安敦化南路一段 161 巷 31 號
+發票地址：台北市中山區中山北路一段 133 號 2 樓
+統一編號：6060629
+日期：115/4/13
+
+客用小方巾 (20*20cm)
+單價80
+數量100
+
+*客用小方巾定價 $90/條，本次訂單優惠 $80/條。
+*此報價單之我司製作客用小方巾，由我司承接洗滌服務，保固 2 年。`;
+
+/* ───────── Helpers ───────── */
+const fmt = n => (isNaN(n)||n===null||n==='') ? '' :
+  Number(n).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+
+/* ───────── AutoFit ───────── */
+function AutoFit({text}) {
+  const wRef = useRef(), tRef = useRef();
+  useEffect(() => {
+    const run = () => {
+      if (!wRef.current || !tRef.current) return;
+      const el = tRef.current;
+      el.style.transform = 'none';
+      el.style.letterSpacing = '0.025em';
+      const cw = wRef.current.clientWidth;
+      let tw = el.scrollWidth;
+      if (tw > cw && cw > 0) {
+        el.style.letterSpacing = 'normal';
+        tw = el.scrollWidth;
+        if (tw > cw) el.style.transform = `scaleX(${cw / tw})`;
+      }
+    };
+    setTimeout(run, 0);
+    window.addEventListener('resize', run);
+    return () => window.removeEventListener('resize', run);
+  }, [text]);
+  return (
+    <div ref={wRef} className="autofit-wrap">
+      <div ref={tRef} className="autofit-inner">{text || '\u00A0'}</div>
+    </div>
+  );
+}
+
+/* ───────── Parser ───────── */
+function parseRaw(raw) {
+  const lines = raw.split('\n');
+  let info = {brandName:'',code:'',title:'',contactName:'',phone:'',address:'',invoiceAddress:'',taxId:'',date:''};
+  let company = {name:'興 霖 事 業 有 限 公 司',address:'新北市汐止區福德一路 392 巷 45 號',phone:'(T)02-2694-1431  (F)02-26931491',contact:'劉睦丞'};
+  let items = [], remarks = [], tableNote = '', docTitle = '報價單', mode = 'normal', tNoteSet = false;
+  const rocY = new Date().getFullYear() - 1911;
+
+  if (lines.length > 0) {
+    const f = lines[0].trim();
+    if (f.includes('新品報價單')) { docTitle = '新品報價單'; tableNote = '*因布匹有縮率，故尺寸誤差 3-5%屬合理範圍。'; }
+    else if (f.includes('洗滌報價單') || f.includes('租賃')) { docTitle = '租賃洗滌報價單'; tableNote = '*每趟最低消費為$500/趟。'; }
+    else if (f && !f.includes('：') && !f.includes(':')) docTitle = f;
+  }
+
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (!t) return;
+    if (i === 0 && (t === docTitle || t.includes('報價單'))) return;
+
+    if (t.match(/^品項[：:\s]/)||t==='品項') { mode='items'; return; }
+    if (t.match(/^備註[：:\s]/)||t==='備註') { mode='remarks'; const r=t.replace(/^備註[：:\s]*/,'').trim(); if(r)remarks.push(r); return; }
+    if (t.startsWith('●')) { mode='remarks'; remarks.push(t); return; }
+    if (t.startsWith('*') || t.startsWith('＊')) { tableNote += (tableNote?'\n':'')+t; tNoteSet=true; return; }
+
+    let isItem = (mode === 'items');
+
+    if (!isItem && mode === 'normal') {
+      if (t.match(/(我方|我司)(公司|抬頭)[：:\s]/)) company.name = t.replace(/.*(我方|我司)(公司|抬頭)[：:\s]*/,'');
+      else if (t.match(/(我方|我司)地址[：:\s]/)) company.address = t.replace(/.*(我方|我司)地址[：:\s]*/,'');
+      else if (t.match(/(我方|我司)電話[：:\s]/)) company.phone = t.replace(/.*(我方|我司)電話[：:\s]*/,'');
+      else if (t.match(/(我方|我司)聯絡人[：:\s]/)) company.contact = t.replace(/.*(我方|我司)聯絡人[：:\s]*/,'');
+      else if (t.match(/^((客戶)?品牌(名稱)?|客戶名稱|店名)[：:\s]/)) info.brandName = t.replace(/.*((客戶)?品牌(名稱)?|客戶名稱|店名)[：:\s]*/,'');
+      else if (t.match(/^(客戶)?代號[：:\s]/)) info.code = t.replace(/.*(客戶)?代號[：:\s]*/,'');
+      else if (t.match(/^(客戶)?抬頭[：:\s]/)) info.title = t.replace(/.*(客戶)?抬頭[：:\s]*/,'');
+      else if (t.match(/^(客戶)?聯絡人[：:\s]/)) info.contactName = t.replace(/.*(客戶)?聯絡人[：:\s]*/,'');
+      else if (t.match(/^(客戶)?(聯絡電話|電話|手機|TEL|Tel|Phone)[：:\s]/i)) info.phone = t.replace(/.*(客戶)?(聯絡電話|電話|手機|TEL|Tel|Phone)[：:\s]*/i,'');
+      else if (t.match(/^(客戶)?(店鋪)?地址[：:\s]/)) info.address = t.replace(/.*(客戶)?(店鋪)?地址[：:\s]*/,'');
+      else if (t.match(/^(客戶)?發票地址[：:\s]/)) info.invoiceAddress = t.replace(/.*(客戶)?發票地址[：:\s]*/,'');
+      else if (t.match(/^(客戶)?(統編|統一編號)[：:\s]/)) info.taxId = t.replace(/.*(客戶)?(統編|統一編號)[：:\s]*/,'');
+      else if (t.match(/^日期[：:\s]/)) {
+        let d = t.replace(/.*日期[：:\s]*/,'').trim();
+        const fm = d.match(/^(\d{1,4})\s*[\/-]\s*(\d{1,2})\s*[\/-]\s*(\d{1,2})$/);
+        const sm = d.match(/^(\d{1,2})\s*[\/-]\s*(\d{1,2})$/);
+        const mm = d.match(/^(\d{1,4})?\s*年?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?$/);
+        if (fm) { let y=parseInt(fm[1]); if(y>1911)y-=1911; info.date=`${y} 年 ${parseInt(fm[2])} 月 ${parseInt(fm[3])} 日`; }
+        else if (sm) { info.date=`${rocY} 年 ${parseInt(sm[1])} 月 ${parseInt(sm[2])} 日`; }
+        else if (mm) { let y=mm[1]?parseInt(mm[1]):rocY; if(y>1911)y-=1911; info.date=`${y} 年 ${parseInt(mm[2])} 月 ${parseInt(mm[3])} 日`; }
+        else info.date = d;
+      }
+      else if (!t.includes('：') && !t.includes(':')) isItem = true;
+    }
+
+    if (isItem) {
+      const po = t.match(/^單價\s*\$?([\d.]+)$/);
+      const qo = t.match(/^數量\s*([\d.]+)$/);
+      if (po && items.length > 0) items[items.length-1].price = po[1];
+      else if (qo && items.length > 0) items[items.length-1].quantity = qo[1];
+      else {
+        const pm = t.match(/單價\s*\$?([\d.]+)/), qm = t.match(/數量\s*([\d.]+)/);
+        const mp = t.match(/^(.*?)\s+\$?([\d.]+)\s*\+\s*\$?([\d.]+)$/);
+        const ms = t.match(/^(.*?)\s+\$?([\d.]+)$/);
+        if (pm && qm) { let n=t.replace(/單價\s*\$?[\d.]+/,'').replace(/數量\s*[\d.]+/,'').trim(); items.push({name:n,price:pm[1],quantity:qm[1]}); }
+        else if (mp) { items.push({name:mp[1].trim(),price:mp[2].trim(),quantity:'1'}); items.push({name:`${mp[1].trim()}租金`,price:mp[3].trim(),quantity:'1'}); }
+        else if (ms) items.push({name:ms[1].trim(),price:ms[2].trim(),quantity:'1'});
+        else items.push({name:t,price:'',quantity:'1'});
+      }
+    } else if (mode==='remarks') remarks.push(t);
+  });
+
+  return {docTitle, tableNote, info, company, items, remarksArr: remarks};
+}
+
+/* ───────── A4 Preview Component ───────── */
+function A4Preview({data, contentRef}) {
+  const {docTitle, tableNote, info, company, items, remarks} = data;
+  const isNew = docTitle.includes('新品');
+  let sub = 0;
+  items.forEach(it => { sub += (parseFloat(it.quantity)||0) * (parseFloat(it.price)||0); });
+  const tax = sub * 0.05, total = sub + tax;
+
+  return (
+    <div ref={contentRef} className="a4-content">
+      {/* Header */}
+      <div style={{textAlign:'center',marginBottom:'28px'}}>
+        <h1 style={{fontSize:'22px',fontWeight:'bold',letterSpacing:'.2em',marginBottom:'6px',fontFamily:'Microsoft JhengHei,sans-serif'}}>{company.name}</h1>
+        <p style={{fontSize:'15px',fontWeight:'bold',marginBottom:'4px'}}>{company.address}</p>
+        <p style={{fontSize:'14px',fontWeight:'bold'}}>{company.phone}&nbsp;&nbsp;<span style={{textDecoration:'underline'}}>聯絡人 {company.contact}</span></p>
+      </div>
+
+      <div style={{textAlign:'center',marginBottom:'20px'}}>
+        <h2 style={{fontSize:'18px',fontWeight:'bold',letterSpacing:'.15em'}}>{docTitle}</h2>
+      </div>
+
+      {/* Customer info */}
+      <div style={{fontSize:'14px',lineHeight:'1.85',fontWeight:'bold',marginBottom:'12px'}}>
+        {(info.brandName || info.code) && (
+          <div style={{display:'flex',justifyContent:'space-between',marginBottom:'10px'}}>
+            <div style={{width:'48%'}}>{info.brandName && <AutoFit text={`店名：${info.brandName}`}/>}</div>
+            <div style={{width:'48%'}}>{info.code && <AutoFit text={`代號：${info.code}`}/>}</div>
+          </div>
+        )}
+        <div style={{marginBottom:'10px'}}><AutoFit text={`抬頭：${info.title}`}/></div>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:'10px'}}>
+          <div style={{width:'48%'}}><AutoFit text={`聯絡人：${info.contactName}`}/></div>
+          <div style={{width:'48%'}}>
+            {(info.phone||'').split(/[\/／]/).map((p,i) => {
+              let tx = p.trim();
+              if (i===0 && !/TEL|MOB|Phone|手機|電話/i.test(tx)) tx = `TEL : ${tx}`;
+              return <AutoFit key={i} text={tx}/>;
+            })}
+          </div>
+        </div>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:'10px'}}>
+          <div style={{width:'48%'}}>
+            <AutoFit text={`${info.invoiceAddress?'店鋪地址':'地址'}：${info.address}`}/>
+            {info.invoiceAddress && <AutoFit text={`發票地址：${info.invoiceAddress}`}/>}
+          </div>
+          <div style={{width:'48%'}}><AutoFit text={`統一編號：${info.taxId}`}/></div>
+        </div>
+        <div style={{display:'flex',justifyContent:'space-between',marginTop:'6px'}}>
+          <div style={{width:'48%'}}><AutoFit text="單位：條 / 幣別：新台幣"/></div>
+          <div style={{width:'48%'}}><AutoFit text={`日期：${info.date}`}/></div>
+        </div>
+      </div>
+
+      {/* Items table */}
+      {isNew ? (
+        <div style={{width:'70%',marginBottom:'6px'}}>
+          <table style={{width:'100%',fontSize:'14px',tableLayout:'fixed'}}>
+            <thead>
+              <tr style={{fontWeight:'bold'}}>
+                <th style={{width:'50%',textAlign:'left',padding:'6px 10px'}}>品項</th>
+                <th style={{width:'15%',textAlign:'center',padding:'6px'}}>數量</th>
+                <th style={{width:'15%',textAlign:'center',padding:'6px'}}>單價</th>
+                <th style={{width:'20%',textAlign:'center',padding:'6px'}}>金額</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, idx) => {
+                const q = parseFloat(it.quantity)||0, p = parseFloat(it.price)||0;
+                return (
+                  <tr key={idx}>
+                    <td style={{padding:'6px 10px'}}><AutoFit text={it.name}/></td>
+                    <td style={{textAlign:'center',padding:'6px'}}>{it.quantity}</td>
+                    <td style={{textAlign:'right',padding:'6px 14px 6px 6px'}}>{fmt(p)}</td>
+                    <td style={{textAlign:'right',padding:'6px 10px 6px 6px'}}>{fmt(q*p)}</td>
+                  </tr>
+                );
+              })}
+              <tr>
+                <td colSpan={2} style={{padding:'6px'}}>&nbsp;</td>
+                <td style={{textAlign:'right',padding:'6px 14px 6px 6px',fontWeight:'bold'}}>稅金 5%</td>
+                <td style={{textAlign:'right',padding:'6px 10px 6px 6px'}}>{fmt(tax)}</td>
+              </tr>
+              <tr>
+                <td colSpan={2} style={{padding:'6px'}}>&nbsp;</td>
+                <td style={{textAlign:'right',padding:'6px 14px 6px 6px',fontWeight:'bold'}}>總計</td>
+                <td style={{textAlign:'right',padding:'6px 10px 6px 6px',fontWeight:'bold'}}>{fmt(total)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:'6px'}}>
+          {[items.slice(0, Math.ceil(items.length/2)), items.slice(Math.ceil(items.length/2))].map((grp, gi) =>
+            grp.length > 0 && (
+              <div key={gi} style={{width:'48%'}}>
+                <table style={{width:'100%',fontSize:'14px',tableLayout:'fixed'}}>
+                  <thead>
+                    <tr style={{fontWeight:'bold'}}>
+                      <th style={{width:'75%',textAlign:'left',padding:'6px 10px'}}>品項</th>
+                      <th style={{width:'25%',textAlign:'center',padding:'6px'}}>單價</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {grp.map((it, i) => (
+                      <tr key={i}>
+                        <td style={{padding:'6px 10px'}}><AutoFit text={it.name}/></td>
+                        <td style={{textAlign:'right',padding:'6px 10px'}}>{it.price}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {tableNote && (
+        <div style={{marginTop:'4px',fontSize:'14px',fontWeight:'bold',whiteSpace:'pre-wrap',lineHeight:'1.7'}}>{tableNote}</div>
+      )}
+
+      {/* Remarks */}
+      <div style={{marginTop:'24px',fontSize:'14px',lineHeight:'1.85',fontWeight:'bold'}}>
+        {remarks.split('\n').map((l, i) => <AutoFit key={i} text={l}/>)}
+      </div>
+
+      {/* Footer */}
+      <div style={{marginTop:'auto',paddingTop:'2rem'}}>
+        <hr style={{borderTop:'1px solid #000',marginBottom:'6px'}}/>
+        <p style={{fontSize:'14px',fontWeight:'bold',letterSpacing:'.05em'}}>確認後請蓋章回傳，謝謝您。</p>
+        <div style={{height:'110px'}}/>
+        <div style={{textAlign:'center'}}>
+          <p style={{fontSize:'16px',fontWeight:'bold',letterSpacing:'.45em',paddingBottom:'6px'}}>
+            專 業 洗 衣 管 理 · 衣 物 財 產 編 列
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────── Mobile simplified preview ───────── */
+function MobilePreview({data}) {
+  const {docTitle, tableNote, info, company, items, remarks} = data;
+  const isNew = docTitle.includes('新品');
+  let sub = 0;
+  items.forEach(it => { sub += (parseFloat(it.quantity)||0)*(parseFloat(it.price)||0); });
+  const tax = sub*0.05, total = sub+tax;
+  const b = {fontWeight:'bold'};
+  return (
+    <div style={{fontSize:'11px',lineHeight:'1.7',fontWeight:'bold',color:'#000'}}>
+      <div style={{textAlign:'center',marginBottom:'8px'}}>
+        <div style={{fontSize:'13px',...b,letterSpacing:'.1em'}}>{company.name}</div>
+        <div>{company.address}</div>
+        <div>{company.phone}　聯絡人 {company.contact}</div>
+      </div>
+      <div style={{textAlign:'center',marginBottom:'8px',fontSize:'12px',...b,letterSpacing:'.12em'}}>{docTitle}</div>
+      <div style={{marginBottom:'6px',fontSize:'11px'}}>
+        {info.brandName && <div>店名：{info.brandName}</div>}
+        <div>抬頭：{info.title}</div>
+        <div>聯絡人：{info.contactName}</div>
+        {(info.phone||'').split(/[\/／]/).map((p,i)=><div key={i}>{i===0?'TEL : ':''}{p.trim()}</div>)}
+        <div>{info.invoiceAddress?'店鋪地址':'地址'}：{info.address}</div>
+        {info.invoiceAddress && <div>發票地址：{info.invoiceAddress}</div>}
+        <div>統一編號：{info.taxId}</div>
+        <div>日期：{info.date}</div>
+      </div>
+      <table style={{width:'100%',fontSize:'10px',borderCollapse:'collapse',marginBottom:'4px'}}>
+        <thead>
+          <tr style={b}>
+            {isNew
+              ? <><th style={{border:'1px solid #000',padding:'3px 6px',textAlign:'left'}}>品項</th><th style={{border:'1px solid #000',padding:'3px',textAlign:'center'}}>數量</th><th style={{border:'1px solid #000',padding:'3px',textAlign:'center'}}>單價</th><th style={{border:'1px solid #000',padding:'3px',textAlign:'center'}}>金額</th></>
+              : <><th style={{border:'1px solid #000',padding:'3px 6px',textAlign:'left'}}>品項</th><th style={{border:'1px solid #000',padding:'3px',textAlign:'center'}}>單價</th></>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it, i) => {
+            const q = parseFloat(it.quantity)||0, p = parseFloat(it.price)||0;
+            return (
+              <tr key={i}>
+                {isNew
+                  ? <><td style={{border:'1px solid #000',padding:'3px 6px'}}>{it.name}</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'center'}}>{it.quantity}</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right'}}>{fmt(p)}</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right'}}>{fmt(q*p)}</td></>
+                  : <><td style={{border:'1px solid #000',padding:'3px 6px'}}>{it.name}</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right'}}>{it.price}</td></>
+                }
+              </tr>
+            );
+          })}
+          {isNew && <>
+            <tr><td colSpan={2} style={{border:'1px solid #000',padding:'3px'}}>&nbsp;</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right',...b}}>稅金5%</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right'}}>{fmt(tax)}</td></tr>
+            <tr><td colSpan={2} style={{border:'1px solid #000',padding:'3px'}}>&nbsp;</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right',...b}}>總計</td><td style={{border:'1px solid #000',padding:'3px',textAlign:'right',...b}}>{fmt(total)}</td></tr>
+          </>}
+        </tbody>
+      </table>
+      {tableNote && <div style={{fontSize:'10px',...b,whiteSpace:'pre-wrap',marginBottom:'4px'}}>{tableNote}</div>}
+      <div style={{fontSize:'10px',marginTop:'8px',lineHeight:'1.6'}}>
+        {remarks.split('\n').map((l,i) => <div key={i}>{l}</div>)}
+      </div>
+      <div style={{marginTop:'12px',borderTop:'1px solid #000',paddingTop:'4px',fontSize:'10px',...b}}>確認後請蓋章回傳，謝謝您。</div>
+    </div>
+  );
+}
+
+/* ───────── Main App ───────── */
+function App() {
+  const [raw, setRaw] = useState(SAMPLE_RAW);
+  const [data, setData] = useState(null);
+  const [remarks, setRemarks] = useState(DEFAULT_REMARKS);
+  const [tab, setTab] = useState('smart');
+  const wrapRef = useRef(), contentRef = useRef();
+
+  const doparse = useCallback(() => {
+    const r = parseRaw(raw);
+    const newRemarks = r.remarksArr.length > 0 ? r.remarksArr.join('\n') : remarks;
+    if (r.remarksArr.length > 0) setRemarks(newRemarks);
+    setData({...r, remarks: newRemarks});
+  }, [raw, remarks]);
+
+  useEffect(() => { doparse(); }, []);
+
+  const [editItems, setEditItems] = useState(null);
+  const [editTableNote, setEditTableNote] = useState('');
+  const [editTitle, setEditTitle] = useState('');
+  const [editCompany, setEditCompany] = useState(null);
+  const [editInfo, setEditInfo] = useState(null);
+  const [openSections, setOpenSections] = useState({company:false, customer:false, items:true, notes:false});
+
+  const toggleSection = k => setOpenSections(s => ({...s, [k]:!s[k]}));
+
+  useEffect(() => {
+    if (data && editItems === null) {
+      setEditItems(data.items);
+      setEditTableNote(data.tableNote);
+      setEditTitle(data.docTitle);
+      setEditCompany(data.company);
+      setEditInfo(data.info);
+    }
+  }, [data]);
+
+  const mergedData = data ? {
+    ...data,
+    remarks,
+    items: editItems ?? data.items,
+    tableNote: editTableNote !== '' || data.tableNote === '' ? editTableNote : data.tableNote,
+    docTitle: editTitle || data.docTitle,
+    company: editCompany ?? data.company,
+    info: editInfo ?? data.info,
+  } : null;
+
+  const updCompany = (f, v) => setEditCompany(c => ({...(c ?? data.company), [f]: v}));
+  const updInfo = (f, v) => setEditInfo(c => ({...(c ?? data.info), [f]: v}));
+
+  // A4 scale-to-fit
+  const fitA4 = useCallback(() => {
+    if (!wrapRef.current || !contentRef.current) return;
+    const wrap = wrapRef.current, cnt = contentRef.current;
+    cnt.style.transform = 'none';
+    const th = wrap.clientHeight, ch = cnt.scrollHeight;
+    if (ch > th && th > 0) cnt.style.transform = `scale(${(th/ch)*0.99})`;
+  }, []);
+
+  useEffect(() => {
+    const id = setTimeout(fitA4, 200);
+    window.addEventListener('resize', fitA4);
+    return () => { clearTimeout(id); window.removeEventListener('resize', fitA4); };
+  }, [mergedData, fitA4]);
+
+  const updateItem = (i, f, v) => {
+    const its = [...(editItems ?? [])];
+    its[i] = {...its[i], [f]: v};
+    setEditItems(its);
+  };
+  const addItem = () => setEditItems([...(editItems ?? []), {name:'',price:'',quantity:'1'}]);
+  const delItem = i => setEditItems((editItems ?? []).filter((_,j) => j !== i));
+
+  const isNew = mergedData?.docTitle?.includes('新品');
+
+  return (
+    <>
+    {/* ── Desktop ── */}
+    <div className="desktop-layout">
+      {/* Left panel */}
+      <div className="left-panel">
+        <div style={{padding:'20px 20px 16px',background:'linear-gradient(135deg,#1e40af 0%,#2563eb 100%)',color:'#fff',flexShrink:0}}>
+          <div style={{fontSize:'20px',fontWeight:'700',marginBottom:'3px'}}>📄 報價單生成器</div>
+          <div style={{fontSize:'13px',opacity:.8}}>興霖事業有限公司　｜　支援新品 / 租賃洗滌</div>
+        </div>
+        <div style={{display:'flex',gap:'6px',padding:'10px 14px',borderBottom:'1px solid #f3f4f6',flexShrink:0}}>
+          {['smart','manual'].map(k => (
+            <button key={k} className={`tab-btn${tab===k?' active':''}`} onClick={()=>setTab(k)}>
+              {k==='smart'?'✨ 智慧貼上':'✎ 手動編輯'}
+            </button>
+          ))}
+        </div>
+
+        <div className="left-scroll">
+          {tab==='smart' ? (
+            <div>
+              <label style={{marginBottom:'6px'}}>貼上客戶資訊與品項</label>
+              <textarea value={raw} onChange={e=>setRaw(e.target.value)} rows={15}
+                style={{fontFamily:'monospace',fontSize:'13px',lineHeight:'1.6',resize:'vertical',marginBottom:'10px'}}/>
+              <button className="btn btn-primary" style={{width:'100%',justifyContent:'center',marginBottom:'12px'}} onClick={()=>{
+                setEditItems(null); setEditTableNote(''); setEditTitle(''); setEditCompany(null); setEditInfo(null); doparse();
+              }}>
+                ✨ 開始解析並套用
+              </button>
+              <div style={{background:'#fffbeb',border:'1px solid #fde68a',borderRadius:'8px',padding:'12px',fontSize:'12px',color:'#92400e',lineHeight:'1.7'}}>
+                <strong>💡 使用提示</strong><br/>
+                第一行輸入「新品報價單」或「租賃洗滌報價單」自動切換格式。<br/>
+                同時支援「店鋪地址」與「發票地址」雙欄顯示。<br/>
+                品項可直接寫品名＋單價＋數量，或分三行輸入。
+              </div>
+            </div>
+          ) : (
+            <div>
+              {/* 標題 */}
+              <div className="card">
+                <label>報價單標題</label>
+                <input value={editTitle||mergedData?.docTitle||''} onChange={e=>setEditTitle(e.target.value)}
+                  style={{fontWeight:'bold',color:'#2563eb'}}/>
+              </div>
+
+              {/* ── 我方公司資訊 ── */}
+              <div className="card" style={{padding:0,overflow:'hidden'}}>
+                <button onClick={()=>toggleSection('company')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 14px',background:'#f8faff',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',color:'#1e40af'}}>
+                  <span>🏢 我方公司資訊</span>
+                  <span style={{fontSize:'12px',color:'#6b7280'}}>{openSections.company ? '▲ 收起' : '▼ 展開'}</span>
+                </button>
+                {openSections.company && (
+                  <div style={{padding:'12px 14px',display:'flex',flexDirection:'column',gap:'10px'}}>
+                    <div><label>公司名稱</label><input value={editCompany?.name||''} onChange={e=>updCompany('name',e.target.value)}/></div>
+                    <div><label>地址</label><input value={editCompany?.address||''} onChange={e=>updCompany('address',e.target.value)}/></div>
+                    <div><label>電話</label><input value={editCompany?.phone||''} onChange={e=>updCompany('phone',e.target.value)}/></div>
+                    <div><label>聯絡人</label><input value={editCompany?.contact||''} onChange={e=>updCompany('contact',e.target.value)}/></div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── 客戶資訊 ── */}
+              <div className="card" style={{padding:0,overflow:'hidden'}}>
+                <button onClick={()=>toggleSection('customer')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 14px',background:'#f0fdf4',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',color:'#15803d'}}>
+                  <span>👤 客戶資訊</span>
+                  <span style={{fontSize:'12px',color:'#6b7280'}}>{openSections.customer ? '▲ 收起' : '▼ 展開'}</span>
+                </button>
+                {openSections.customer && (
+                  <div style={{padding:'12px 14px',display:'flex',flexDirection:'column',gap:'10px'}}>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+                      <div><label>店名／品牌名稱</label><input value={editInfo?.brandName||''} onChange={e=>updInfo('brandName',e.target.value)}/></div>
+                      <div><label>代號</label><input value={editInfo?.code||''} onChange={e=>updInfo('code',e.target.value)}/></div>
+                    </div>
+                    <div><label>抬頭（公司全名）</label><input value={editInfo?.title||''} onChange={e=>updInfo('title',e.target.value)}/></div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+                      <div><label>聯絡人</label><input value={editInfo?.contactName||''} onChange={e=>updInfo('contactName',e.target.value)}/></div>
+                      <div><label>電話（/ 分隔多組）</label><input value={editInfo?.phone||''} onChange={e=>updInfo('phone',e.target.value)}/></div>
+                    </div>
+                    <div><label>店鋪地址</label><input value={editInfo?.address||''} onChange={e=>updInfo('address',e.target.value)}/></div>
+                    <div><label>發票地址（選填）</label><input value={editInfo?.invoiceAddress||''} onChange={e=>updInfo('invoiceAddress',e.target.value)}/></div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+                      <div><label>統一編號</label><input value={editInfo?.taxId||''} onChange={e=>updInfo('taxId',e.target.value)}/></div>
+                      <div><label>日期</label><input value={editInfo?.date||''} onChange={e=>updInfo('date',e.target.value)} placeholder="115 年 4 月 13 日"/></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── 品項 ── */}
+              <div className="card" style={{padding:0,overflow:'hidden'}}>
+                <button onClick={()=>toggleSection('items')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 14px',background:'#fefce8',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',color:'#92400e'}}>
+                  <span>📦 品項管理</span>
+                  <span style={{fontSize:'12px',color:'#6b7280'}}>{openSections.items ? '▲ 收起' : '▼ 展開'}</span>
+                </button>
+                {openSections.items && (
+                  <div style={{padding:'12px 14px'}}>
+                    <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+                      {(editItems ?? []).map((it, i) => (
+                        <div key={i} style={{display:'flex',gap:'6px',alignItems:'center'}}>
+                          <input value={it.name} onChange={e=>updateItem(i,'name',e.target.value)} placeholder="品名" style={{flex:1}}/>
+                          {isNew && <input value={it.quantity} onChange={e=>updateItem(i,'quantity',e.target.value)} placeholder="數量" style={{width:'58px',textAlign:'center'}}/>}
+                          <input value={it.price} onChange={e=>updateItem(i,'price',e.target.value)} placeholder="單價" style={{width:'68px',textAlign:'right'}}/>
+                          <button className="btn btn-danger" onClick={()=>delItem(i)}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                    <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center',marginTop:'10px',fontSize:'13px'}} onClick={addItem}>
+                      + 新增品項
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* ── 備註 ── */}
+              <div className="card" style={{padding:0,overflow:'hidden'}}>
+                <button onClick={()=>toggleSection('notes')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 14px',background:'#fdf2f8',border:'none',cursor:'pointer',fontSize:'13px',fontWeight:'600',color:'#9d174d'}}>
+                  <span>📝 備註設定</span>
+                  <span style={{fontSize:'12px',color:'#6b7280'}}>{openSections.notes ? '▲ 收起' : '▼ 展開'}</span>
+                </button>
+                {openSections.notes && (
+                  <div style={{padding:'12px 14px',display:'flex',flexDirection:'column',gap:'10px'}}>
+                    <div>
+                      <label>表格下方備註</label>
+                      <textarea value={editTableNote} onChange={e=>setEditTableNote(e.target.value)} rows={3} style={{fontSize:'13px'}}/>
+                    </div>
+                    <div>
+                      <label>底部備註（7 大服務項目）</label>
+                      <textarea value={remarks} onChange={e=>setRemarks(e.target.value)} rows={10} style={{fontSize:'12px',lineHeight:'1.6'}}/>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{padding:'14px',borderTop:'1px solid #e5e7eb',background:'#f9fafb',flexShrink:0}}>
+          <button className="btn btn-success" style={{width:'100%',justifyContent:'center',fontSize:'15px',padding:'12px 16px'}} onClick={()=>window.print()}>
+            🖨️ 預覽列印 / 存成 PDF
+          </button>
+        </div>
+      </div>
+
+      {/* A4 preview */}
+      <div className="preview-area">
+        <div ref={wrapRef} className="a4-wrap">
+          {mergedData && <A4Preview data={mergedData} contentRef={contentRef}/>}
+        </div>
+      </div>
+    </div>
+
+    {/* ── Mobile ── */}
+    <div className="mobile-layout">
+      <div className="mobile-preview">
+        <div className="mobile-preview-card">
+          {mergedData && <MobilePreview data={mergedData}/>}
+        </div>
+      </div>
+      <div className="mobile-bottom">
+        <div className="mobile-action-bar">
+          {['smart','manual'].map(k => (
+            <button key={k} className={`tab-btn${tab===k?' active':''}`}
+              style={{fontSize:'13px',padding:'7px 14px',flex:1}} onClick={()=>setTab(k)}>
+              {k==='smart'?'✨ 智慧貼上':'✎ 手動編輯'}
+            </button>
+          ))}
+          <button className="btn btn-success" style={{padding:'7px 14px',fontSize:'13px'}} onClick={()=>window.print()}>
+            🖨️ 列印
+          </button>
+        </div>
+        <div className="mobile-drawer">
+          {tab==='smart' ? (
+            <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+              <textarea value={raw} onChange={e=>setRaw(e.target.value)} rows={9}
+                style={{fontFamily:'monospace',fontSize:'12px',lineHeight:'1.5',resize:'none'}}/>
+              <button className="btn btn-primary" style={{width:'100%',justifyContent:'center'}} onClick={()=>{
+                setEditItems(null); setEditTableNote(''); setEditTitle(''); setEditCompany(null); setEditInfo(null); doparse();
+              }}>✨ 解析套用</button>
+            </div>
+          ) : (
+            <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+              {/* 標題 */}
+              <input value={editTitle||mergedData?.docTitle||''} onChange={e=>setEditTitle(e.target.value)}
+                placeholder="報價單標題" style={{fontWeight:'bold',color:'#2563eb',fontSize:'13px'}}/>
+
+              {/* 我方公司 */}
+              <div style={{background:'#f8faff',borderRadius:'8px',overflow:'hidden',border:'1px solid #dbeafe'}}>
+                <button onClick={()=>toggleSection('company')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'transparent',border:'none',cursor:'pointer',fontSize:'12px',fontWeight:'600',color:'#1e40af'}}>
+                  <span>🏢 我方公司資訊</span><span>{openSections.company?'▲':'▼'}</span>
+                </button>
+                {openSections.company && (
+                  <div style={{padding:'0 10px 10px',display:'flex',flexDirection:'column',gap:'6px'}}>
+                    {[['name','公司名稱'],['address','地址'],['phone','電話'],['contact','聯絡人']].map(([f,lb])=>(
+                      <div key={f}><label style={{fontSize:'11px'}}>{lb}</label><input value={editCompany?.[f]||''} onChange={e=>updCompany(f,e.target.value)} style={{fontSize:'12px'}}/></div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 客戶資訊 */}
+              <div style={{background:'#f0fdf4',borderRadius:'8px',overflow:'hidden',border:'1px solid #bbf7d0'}}>
+                <button onClick={()=>toggleSection('customer')} style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'transparent',border:'none',cursor:'pointer',fontSize:'12px',fontWeight:'600',color:'#15803d'}}>
+                  <span>👤 客戶資訊</span><span>{openSections.customer?'▲':'▼'}</span>
+                </button>
+                {openSections.customer && (
+                  <div style={{padding:'0 10px 10px',display:'flex',flexDirection:'column',gap:'6px'}}>
+                    {[['brandName','店名/品牌'],['code','代號'],['title','抬頭'],['contactName','聯絡人'],['phone','電話'],['address','店鋪地址'],['invoiceAddress','發票地址'],['taxId','統一編號'],['date','日期']].map(([f,lb])=>(
+                      <div key={f}><label style={{fontSize:'11px'}}>{lb}</label><input value={editInfo?.[f]||''} onChange={e=>updInfo(f,e.target.value)} style={{fontSize:'12px'}}/></div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 品項 */}
+              {(editItems ?? []).map((it, i) => (
+                <div key={i} style={{display:'flex',gap:'4px',alignItems:'center'}}>
+                  <input value={it.name} onChange={e=>updateItem(i,'name',e.target.value)} placeholder="品名" style={{flex:1,fontSize:'12px'}}/>
+                  {isNew && <input value={it.quantity} onChange={e=>updateItem(i,'quantity',e.target.value)} placeholder="量" style={{width:'44px',fontSize:'12px',textAlign:'center'}}/>}
+                  <input value={it.price} onChange={e=>updateItem(i,'price',e.target.value)} placeholder="單價" style={{width:'58px',fontSize:'12px',textAlign:'right'}}/>
+                  <button style={{background:'#fef2f2',color:'#ef4444',border:'none',borderRadius:'6px',padding:'6px 8px',cursor:'pointer',fontSize:'12px'}} onClick={()=>delItem(i)}>✕</button>
+                </div>
+              ))}
+              <button className="btn btn-ghost" style={{width:'100%',justifyContent:'center',fontSize:'13px'}} onClick={addItem}>+ 新增品項</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+
+    {/* ── Print zone (A4 only) ── */}
+    <div className="print-zone">
+      <div className="a4-wrap">
+        {mergedData && <A4Preview data={mergedData} contentRef={null}/>}
+      </div>
+    </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
