@@ -4,6 +4,7 @@ gdrive.py — Google Drive 上傳報價單 PDF
 """
 import io
 import os
+import re
 import logging
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -48,20 +49,60 @@ def _build_folder_name(data: QuoteData) -> str:
     return '-'.join(parts)
 
 
-def _find_folder(service, parent_id: str, folder_name: str) -> str | None:
-    """Find a folder by name under parent. Returns folder ID or None."""
+def _normalize_name(name: str) -> str:
+    """Normalize folder name: remove spaces around dashes for comparison."""
+    return re.sub(r'\s*-\s*', '-', name).strip()
+
+
+def _list_subfolders(service, parent_id: str) -> list[dict]:
+    """List all subfolders under parent. Returns list of {id, name}."""
     query = (
         f"'{parent_id}' in parents "
-        f"and name = '{folder_name}' "
         f"and mimeType = 'application/vnd.google-apps.folder' "
         f"and trashed = false"
     )
-    results = service.files().list(
-        q=query, fields='files(id, name)', pageSize=1,
-        supportsAllDrives=True, includeItemsFromAllDrives=True,
-    ).execute()
-    files = results.get('files', [])
-    return files[0]['id'] if files else None
+    all_folders = []
+    page_token = None
+    while True:
+        results = service.files().list(
+            q=query, fields='nextPageToken, files(id, name)', pageSize=100,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+            pageToken=page_token,
+        ).execute()
+        all_folders.extend(results.get('files', []))
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
+    return all_folders
+
+
+def find_matching_folder(data: QuoteData) -> dict:
+    """
+    Search for matching customer folder in Google Drive.
+    Returns dict with keys:
+      - match_type: 'exact', 'similar', 'none'
+      - folder_id: Drive folder ID (if found)
+      - folder_name: existing folder name (if found)
+    """
+    target_name = _build_folder_name(data)
+    target_normalized = _normalize_name(target_name)
+    service = _get_drive_service()
+
+    subfolders = _list_subfolders(service, QUOTES_FOLDER_ID)
+
+    for folder in subfolders:
+        existing_name = folder['name']
+        if existing_name == target_name:
+            return {'match_type': 'exact', 'folder_id': folder['id'], 'folder_name': existing_name}
+
+    # No exact match — check for similar (normalized match)
+    for folder in subfolders:
+        existing_name = folder['name']
+        existing_normalized = _normalize_name(existing_name)
+        if existing_normalized == target_normalized:
+            return {'match_type': 'similar', 'folder_id': folder['id'], 'folder_name': existing_name}
+
+    return {'match_type': 'none', 'folder_id': None, 'folder_name': None}
 
 
 def _create_folder(service, parent_id: str, folder_name: str) -> str:
@@ -77,28 +118,12 @@ def _create_folder(service, parent_id: str, folder_name: str) -> str:
     return folder['id']
 
 
-def upload_quote_pdf(data: QuoteData, pdf_bytes: bytes) -> tuple[str, str]:
-    """
-    Upload quote PDF to Google Drive.
-    Creates folder: 報價單/{代號 品牌名}/品牌名_報價單類型.pdf
-    Returns (folder_name, folder_link).
-    """
-    folder_name = _build_folder_name(data)
+def upload_pdf_to_folder(folder_id: str, data: QuoteData, pdf_bytes: bytes) -> None:
+    """Upload PDF to an existing folder."""
     service = _get_drive_service()
-
-    # Find or create customer subfolder
-    folder_id = _find_folder(service, QUOTES_FOLDER_ID, folder_name)
-    if not folder_id:
-        folder_id = _create_folder(service, QUOTES_FOLDER_ID, folder_name)
-        logger.info(f'Created Drive folder: {folder_name}')
-    else:
-        logger.info(f'Drive folder already exists: {folder_name}')
-
-    # Build PDF filename
     customer = data.info.brand_name or data.info.title or '報價單'
     pdf_filename = f'{customer}_{data.doc_title}.pdf'
 
-    # Upload PDF
     file_metadata = {
         'name': pdf_filename,
         'parents': [folder_id],
@@ -111,9 +136,22 @@ def upload_quote_pdf(data: QuoteData, pdf_bytes: bytes) -> tuple[str, str]:
     service.files().create(
         body=file_metadata, media_body=media, fields='id', supportsAllDrives=True,
     ).execute()
-    logger.info(f'Uploaded: {folder_name}/{pdf_filename}')
+    logger.info(f'Uploaded PDF to folder {folder_id}: {pdf_filename}')
 
-    # Build folder link
+
+def create_folder_and_upload(data: QuoteData, pdf_bytes: bytes) -> tuple[str, str]:
+    """Create new customer folder and upload PDF. Returns (folder_name, folder_link)."""
+    folder_name = _build_folder_name(data)
+    service = _get_drive_service()
+    folder_id = _create_folder(service, QUOTES_FOLDER_ID, folder_name)
+    logger.info(f'Created Drive folder: {folder_name}')
+
+    upload_pdf_to_folder(folder_id, data, pdf_bytes)
+
     folder_link = f'https://drive.google.com/drive/folders/{folder_id}'
-
     return folder_name, folder_link
+
+
+def get_folder_link(folder_id: str) -> str:
+    """Build Google Drive folder link."""
+    return f'https://drive.google.com/drive/folders/{folder_id}'

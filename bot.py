@@ -20,8 +20,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation states
-CONFIRM_SAME_CUSTOMER = 1
-CONFIRM_OVERWRITE = 2
+CONFIRM_DRIVE_FOLDER = 1
+CONFIRM_SAME_CUSTOMER = 2
+CONFIRM_OVERWRITE = 3
 
 HELP_TEXT = """📄 *報價單 PDF 生成 Bot*
 興霖事業有限公司
@@ -90,69 +91,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption=f'✅ {data.doc_title} — {customer}\n共 {len(data.items)} 項品項',
         )
 
-        # Step 2: Upload to Google Drive
-        drive_link = ''
+        # Store in context for later steps
+        context.user_data['quote_data'] = data
+        context.user_data['pdf_bytes'] = pdf_bytes
+
+        # Step 2: Google Drive — find matching folder
         try:
-            from gdrive import upload_quote_pdf
-            folder_name, drive_link = upload_quote_pdf(data, pdf_bytes)
-            await update.message.reply_text(
-                f'📁 報價單已上傳至 Google Drive\n資料夾：{folder_name}/'
-            )
+            from gdrive import find_matching_folder, _build_folder_name
+            folder_result = find_matching_folder(data)
+            context.user_data['drive_folder_result'] = folder_result
+
+            if folder_result['match_type'] == 'exact':
+                # Exact match — upload directly
+                await _upload_to_drive(update, context, folder_result['folder_id'])
+                await _proceed_to_notion(update, context)
+                return context.user_data.get('_next_state', ConversationHandler.END)
+
+            elif folder_result['match_type'] == 'similar':
+                # Similar match — ask user
+                target_name = _build_folder_name(data)
+                await update.message.reply_text(
+                    f'📁 Google Drive 找到相似資料夾：\n'
+                    f'現有：「{folder_result["folder_name"]}」\n'
+                    f'新名：「{target_name}」\n\n'
+                    f'是否放入現有資料夾？',
+                    reply_markup=YES_NO_KEYBOARD,
+                )
+                return CONFIRM_DRIVE_FOLDER
+
+            else:
+                # No match — create new folder
+                await _create_drive_folder_and_upload(update, context)
+                await _proceed_to_notion(update, context)
+                return context.user_data.get('_next_state', ConversationHandler.END)
+
         except Exception as e:
             logger.error(f'Google Drive error: {e}', exc_info=True)
             await update.message.reply_text(f'⚠️ Google Drive 上傳失敗：{e}')
-
-        # Step 3: Check Notion for existing customer
-        try:
-            from notion_client import search_customer
-            search_result = search_customer(data)
-
-            # Store data in context for conversation flow
-            context.user_data['quote_data'] = data
-            context.user_data['drive_link'] = drive_link
-            context.user_data['search_result'] = search_result
-
-            match_type = search_result['match_type']
-
-            if match_type == 'both':
-                # Both name and tax ID match — ask to overwrite
-                await update.message.reply_text(
-                    f'🔍 Notion 中已有相同客戶：\n'
-                    f'客戶名稱：{search_result["existing_name"]}\n'
-                    f'統一編號：{search_result["existing_tax_id"]}\n\n'
-                    f'是否要覆蓋更新資料？',
-                    reply_markup=YES_NO_KEYBOARD,
-                )
-                return CONFIRM_OVERWRITE
-
-            elif match_type in ('name_only', 'tax_id_only'):
-                # Only one matches — ask if same customer
-                if match_type == 'name_only':
-                    msg = (
-                        f'🔍 Notion 中找到相同客戶名稱：\n'
-                        f'客戶名稱：{search_result["existing_name"]}\n'
-                        f'統一編號：{search_result["existing_tax_id"]}\n\n'
-                        f'但統一編號不同。這是同一個客戶嗎？'
-                    )
-                else:
-                    msg = (
-                        f'🔍 Notion 中找到相同統一編號：\n'
-                        f'客戶名稱：{search_result["existing_name"]}\n'
-                        f'統一編號：{search_result["existing_tax_id"]}\n\n'
-                        f'但客戶名稱不同。這是同一個客戶嗎？'
-                    )
-                await update.message.reply_text(msg, reply_markup=YES_NO_KEYBOARD)
-                return CONFIRM_SAME_CUSTOMER
-
-            else:
-                # No match — create new customer
-                await _create_new_customer(update, data, drive_link)
-                return ConversationHandler.END
-
-        except Exception as e:
-            logger.error(f'Notion error: {e}', exc_info=True)
-            await update.message.reply_text(f'⚠️ Notion 操作失敗：{e}')
-            return ConversationHandler.END
+            context.user_data['drive_link'] = ''
+            await _proceed_to_notion(update, context)
+            return context.user_data.get('_next_state', ConversationHandler.END)
 
     except Exception as e:
         logger.error(f'Error: {e}', exc_info=True)
@@ -160,22 +138,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 
+async def confirm_drive_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle response to 'use existing similar folder?' question."""
+    answer = update.message.text
+
+    if '是' in answer:
+        # Use existing folder
+        folder_result = context.user_data.get('drive_folder_result', {})
+        await _upload_to_drive(update, context, folder_result['folder_id'])
+    else:
+        # Create new folder
+        await _create_drive_folder_and_upload(update, context)
+
+    await _proceed_to_notion(update, context)
+    return context.user_data.get('_next_state', ConversationHandler.END)
+
+
 async def confirm_same_customer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle response to 'is this the same customer?' question."""
     answer = update.message.text
     data = context.user_data.get('quote_data')
     drive_link = context.user_data.get('drive_link', '')
-    search_result = context.user_data.get('search_result', {})
 
     if '是' in answer:
-        # Same customer — ask if they want to overwrite
         await update.message.reply_text(
             '確認為同一客戶。是否要覆蓋更新資料？',
             reply_markup=YES_NO_KEYBOARD,
         )
         return CONFIRM_OVERWRITE
     else:
-        # Not same customer — create new
         await _create_new_customer(update, data, drive_link)
         return ConversationHandler.END
 
@@ -188,7 +179,6 @@ async def confirm_overwrite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     search_result = context.user_data.get('search_result', {})
 
     if '是' in answer:
-        # Overwrite existing customer
         try:
             from notion_client import update_customer
             update_customer(search_result['page_id'], data, drive_link)
@@ -203,7 +193,6 @@ async def confirm_overwrite(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=ReplyKeyboardRemove(),
             )
     else:
-        # Don't overwrite — just update drive link if needed
         if drive_link and search_result.get('page_id'):
             try:
                 from notion_client import update_drive_link
@@ -230,6 +219,87 @@ async def confirm_overwrite(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('已取消。', reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
+
+
+# ── Helper functions ──
+
+async def _upload_to_drive(update: Update, context: ContextTypes.DEFAULT_TYPE, folder_id: str):
+    """Upload PDF to an existing Drive folder."""
+    from gdrive import upload_pdf_to_folder, get_folder_link
+    data = context.user_data['quote_data']
+    pdf_bytes = context.user_data['pdf_bytes']
+
+    upload_pdf_to_folder(folder_id, data, pdf_bytes)
+    drive_link = get_folder_link(folder_id)
+    context.user_data['drive_link'] = drive_link
+    await update.message.reply_text(
+        f'📁 報價單已上傳至 Google Drive',
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+async def _create_drive_folder_and_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create new Drive folder and upload PDF."""
+    from gdrive import create_folder_and_upload
+    data = context.user_data['quote_data']
+    pdf_bytes = context.user_data['pdf_bytes']
+
+    folder_name, drive_link = create_folder_and_upload(data, pdf_bytes)
+    context.user_data['drive_link'] = drive_link
+    await update.message.reply_text(
+        f'📁 已建立資料夾「{folder_name}」並上傳報價單',
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+async def _proceed_to_notion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check Notion and either create customer or ask for confirmation."""
+    data = context.user_data['quote_data']
+    drive_link = context.user_data.get('drive_link', '')
+
+    try:
+        from notion_client import search_customer
+        search_result = search_customer(data)
+        context.user_data['search_result'] = search_result
+
+        match_type = search_result['match_type']
+
+        if match_type == 'both':
+            await update.message.reply_text(
+                f'🔍 Notion 中已有相同客戶：\n'
+                f'客戶名稱：{search_result["existing_name"]}\n'
+                f'統一編號：{search_result["existing_tax_id"]}\n\n'
+                f'是否要覆蓋更新資料？',
+                reply_markup=YES_NO_KEYBOARD,
+            )
+            context.user_data['_next_state'] = CONFIRM_OVERWRITE
+
+        elif match_type in ('name_only', 'tax_id_only'):
+            if match_type == 'name_only':
+                msg = (
+                    f'🔍 Notion 中找到相同客戶名稱：\n'
+                    f'客戶名稱：{search_result["existing_name"]}\n'
+                    f'統一編號：{search_result["existing_tax_id"]}\n\n'
+                    f'但統一編號不同。這是同一個客戶嗎？'
+                )
+            else:
+                msg = (
+                    f'🔍 Notion 中找到相同統一編號：\n'
+                    f'客戶名稱：{search_result["existing_name"]}\n'
+                    f'統一編號：{search_result["existing_tax_id"]}\n\n'
+                    f'但客戶名稱不同。這是同一個客戶嗎？'
+                )
+            await update.message.reply_text(msg, reply_markup=YES_NO_KEYBOARD)
+            context.user_data['_next_state'] = CONFIRM_SAME_CUSTOMER
+
+        else:
+            await _create_new_customer(update, data, drive_link)
+            context.user_data['_next_state'] = ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f'Notion error: {e}', exc_info=True)
+        await update.message.reply_text(f'⚠️ Notion 操作失敗：{e}')
+        context.user_data['_next_state'] = ConversationHandler.END
 
 
 async def _create_new_customer(update: Update, data: QuoteData, drive_link: str):
@@ -262,6 +332,9 @@ def main():
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
         ],
         states={
+            CONFIRM_DRIVE_FOLDER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_drive_folder),
+            ],
             CONFIRM_SAME_CUSTOMER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_same_customer),
             ],
