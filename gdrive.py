@@ -56,7 +56,10 @@ def _find_folder(service, parent_id: str, folder_name: str) -> str | None:
         f"and mimeType = 'application/vnd.google-apps.folder' "
         f"and trashed = false"
     )
-    results = service.files().list(q=query, fields='files(id, name)', pageSize=1).execute()
+    results = service.files().list(
+        q=query, fields='files(id, name)', pageSize=1,
+        supportsAllDrives=True, includeItemsFromAllDrives=True,
+    ).execute()
     files = results.get('files', [])
     return files[0]['id'] if files else None
 
@@ -68,7 +71,9 @@ def _create_folder(service, parent_id: str, folder_name: str) -> str:
         'mimeType': 'application/vnd.google-apps.folder',
         'parents': [parent_id],
     }
-    folder = service.files().create(body=metadata, fields='id').execute()
+    folder = service.files().create(
+        body=metadata, fields='id', supportsAllDrives=True,
+    ).execute()
     return folder['id']
 
 
@@ -103,7 +108,9 @@ def upload_quote_pdf(data: QuoteData, pdf_bytes: bytes) -> tuple[str, str]:
         io.BytesIO(pdf_bytes),
         mimetype='application/pdf',
     )
-    service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    service.files().create(
+        body=file_metadata, media_body=media, fields='id', supportsAllDrives=True,
+    ).execute()
     logger.info(f'Uploaded: {folder_name}/{pdf_filename}')
 
     # Build folder link
