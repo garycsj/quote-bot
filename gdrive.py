@@ -37,7 +37,7 @@ def _get_drive_service():
 
 
 def _build_folder_name(data: QuoteData) -> str:
-    """Build folder name matching Notion format: 代號 品牌名."""
+    """Build folder name: 代號-品牌名."""
     parts = []
     if data.info.code:
         parts.append(data.info.code)
@@ -45,7 +45,7 @@ def _build_folder_name(data: QuoteData) -> str:
         parts.append(data.info.brand_name)
     if not parts:
         return data.info.title or '未命名客戶'
-    return ' '.join(parts)
+    return '-'.join(parts)
 
 
 def _find_folder(service, parent_id: str, folder_name: str) -> str | None:
