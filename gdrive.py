@@ -155,3 +155,82 @@ def create_folder_and_upload(data: QuoteData, pdf_bytes: bytes) -> tuple[str, st
 def get_folder_link(folder_id: str) -> str:
     """Build Google Drive folder link."""
     return f'https://drive.google.com/drive/folders/{folder_id}'
+
+
+X_FOLDER_NAME = 'X'
+
+
+def _list_pdfs_in_folder(service, folder_id: str) -> list[dict]:
+    """List all PDFs (non-trashed) in a folder."""
+    query = (
+        f"'{folder_id}' in parents "
+        f"and mimeType = 'application/pdf' "
+        f"and trashed = false"
+    )
+    files = []
+    page_token = None
+    while True:
+        results = service.files().list(
+            q=query, fields='nextPageToken, files(id, name)', pageSize=100,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+            pageToken=page_token,
+        ).execute()
+        files.extend(results.get('files', []))
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
+    return files
+
+
+def find_old_versions(folder_id: str, data: QuoteData) -> list[dict]:
+    """Find existing PDFs in the customer folder that share the same
+    brand + doc_title prefix as the new quote (i.e., previous versions
+    of the same report). Returns list of {id, name}."""
+    customer = data.info.brand_name or data.info.title or '報價單'
+    prefix = f'{customer}_{data.doc_title}'
+    service = _get_drive_service()
+    return [f for f in _list_pdfs_in_folder(service, folder_id)
+            if f['name'].startswith(prefix)]
+
+
+def find_or_create_x_folder() -> str:
+    """Get the 'X' folder under QUOTES_FOLDER_ID, creating it if missing."""
+    service = _get_drive_service()
+    for f in _list_subfolders(service, QUOTES_FOLDER_ID):
+        if f['name'] == X_FOLDER_NAME:
+            return f['id']
+    return _create_folder(service, QUOTES_FOLDER_ID, X_FOLDER_NAME)
+
+
+def move_pdfs_to_x(files: list[dict], x_folder_id: str, source_folder_id: str) -> list[str]:
+    """Move PDFs from source folder to X folder. On name collision in X,
+    append _v2, _v3, ... suffix. Returns list of final names used."""
+    service = _get_drive_service()
+    existing_names = {f['name'] for f in _list_pdfs_in_folder(service, x_folder_id)}
+    moved_names: list[str] = []
+
+    for f in files:
+        original_name = f['name']
+        new_name = original_name
+        if new_name in existing_names:
+            stem, ext = os.path.splitext(original_name)
+            n = 2
+            while f'{stem}_v{n}{ext}' in existing_names:
+                n += 1
+            new_name = f'{stem}_v{n}{ext}'
+        existing_names.add(new_name)
+
+        update_kwargs = {
+            'fileId': f['id'],
+            'addParents': x_folder_id,
+            'removeParents': source_folder_id,
+            'fields': 'id, parents, name',
+            'supportsAllDrives': True,
+        }
+        if new_name != original_name:
+            update_kwargs['body'] = {'name': new_name}
+        service.files().update(**update_kwargs).execute()
+        moved_names.append(new_name)
+        logger.info(f'Moved {original_name} → X/{new_name}')
+
+    return moved_names

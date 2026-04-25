@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 CONFIRM_DRIVE_FOLDER = 1
 CONFIRM_SAME_CUSTOMER = 2
 CONFIRM_OVERWRITE = 3
+CONFIRM_MOVE_OLD = 4
 
 HELP_TEXT = """📄 *報價單 PDF 生成 Bot*
 興霖事業有限公司
@@ -102,10 +103,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['drive_folder_result'] = folder_result
 
             if folder_result['match_type'] == 'exact':
-                # Exact match — upload directly
-                await _upload_to_drive(update, context, folder_result['folder_id'])
-                await _proceed_to_notion(update, context)
-                return context.user_data.get('_next_state', ConversationHandler.END)
+                # Exact match — check for old versions first, then upload
+                return await _maybe_ask_move_then_upload(
+                    update, context, folder_result['folder_id'],
+                )
 
             elif folder_result['match_type'] == 'similar':
                 # Similar match — ask user
@@ -143,13 +144,14 @@ async def confirm_drive_folder(update: Update, context: ContextTypes.DEFAULT_TYP
     answer = update.message.text
 
     if '是' in answer:
-        # Use existing folder
+        # Use existing folder — check for old versions before uploading
         folder_result = context.user_data.get('drive_folder_result', {})
-        await _upload_to_drive(update, context, folder_result['folder_id'])
-    else:
-        # Create new folder
-        await _create_drive_folder_and_upload(update, context)
+        return await _maybe_ask_move_then_upload(
+            update, context, folder_result['folder_id'],
+        )
 
+    # Create new folder
+    await _create_drive_folder_and_upload(update, context)
     await _proceed_to_notion(update, context)
     return context.user_data.get('_next_state', ConversationHandler.END)
 
@@ -216,12 +218,63 @@ async def confirm_overwrite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def confirm_move_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle response to 'move old quote PDFs to X folder?' question."""
+    answer = update.message.text
+    folder_id = context.user_data.get('target_folder_id')
+    old_files = context.user_data.get('old_versions', [])
+
+    if '是' in answer and old_files:
+        try:
+            from gdrive import find_or_create_x_folder, move_pdfs_to_x
+            x_folder_id = find_or_create_x_folder()
+            moved = move_pdfs_to_x(old_files, x_folder_id, folder_id)
+            moved_lines = '\n'.join(f'  • {n}' for n in moved)
+            await update.message.reply_text(
+                f'📦 已將 {len(moved)} 份舊報價單移至「X」資料夾：\n{moved_lines}',
+            )
+        except Exception as e:
+            logger.error(f'Move old PDFs error: {e}', exc_info=True)
+            await update.message.reply_text(f'⚠️ 搬移舊檔失敗：{e}')
+    else:
+        await update.message.reply_text('👌 保留舊檔，繼續上傳新版。')
+
+    await _upload_to_drive(update, context, folder_id)
+    await _proceed_to_notion(update, context)
+    return context.user_data.get('_next_state', ConversationHandler.END)
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('已取消。', reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 
 # ── Helper functions ──
+
+async def _maybe_ask_move_then_upload(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, folder_id: str,
+) -> int:
+    """If the customer folder already has previous versions of this report,
+    ask the user whether to move them to the 'X' folder before uploading."""
+    from gdrive import find_old_versions
+    data = context.user_data['quote_data']
+    old_files = find_old_versions(folder_id, data)
+
+    if old_files:
+        context.user_data['target_folder_id'] = folder_id
+        context.user_data['old_versions'] = old_files
+        names = '\n'.join(f'  • {f["name"]}' for f in old_files)
+        await update.message.reply_text(
+            f'📂 此客戶資料夾內已有 {len(old_files)} 份舊報價單：\n{names}\n\n'
+            f'是否將舊檔移至「X」資料夾，並上傳新版？',
+            reply_markup=YES_NO_KEYBOARD,
+        )
+        return CONFIRM_MOVE_OLD
+
+    await _upload_to_drive(update, context, folder_id)
+    await _proceed_to_notion(update, context)
+    return context.user_data.get('_next_state', ConversationHandler.END)
+
 
 async def _upload_to_drive(update: Update, context: ContextTypes.DEFAULT_TYPE, folder_id: str):
     """Upload PDF to an existing Drive folder."""
@@ -340,6 +393,9 @@ def main():
             ],
             CONFIRM_OVERWRITE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_overwrite),
+            ],
+            CONFIRM_MOVE_OLD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_move_old),
             ],
         },
         fallbacks=[
