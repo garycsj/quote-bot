@@ -4,12 +4,16 @@ bot.py — Telegram 報價單 PDF 生成 Bot
 """
 import os
 import logging
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
-    filters, ContextTypes,
+    CallbackQueryHandler, filters, ContextTypes,
 )
 
+import whitelist
 from parser import parse_raw, QuoteData
 from pdf_generator import generate_pdf
 
@@ -66,6 +70,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user and not whitelist.is_authorized(user.id):
+        await _handle_unauthorized(update, context)
+        return ConversationHandler.END
+
     text = update.message.text
     if not text or len(text.strip()) < 5:
         await update.message.reply_text('請貼上報價資訊文字，我會幫你生成 PDF 報價單。')
@@ -249,6 +258,111 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply with the caller's Telegram identifiers — works for everyone."""
+    user = update.effective_user
+    chat = update.effective_chat
+    username = f'@{user.username}' if user and user.username else '(無)'
+    await update.message.reply_text(
+        f'您的 Telegram 資訊：\n'
+        f'User ID: `{user.id if user else "?"}`\n'
+        f'Chat ID: `{chat.id if chat else "?"}`\n'
+        f'Username: {username}',
+        parse_mode='Markdown',
+    )
+
+
+async def _handle_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reject unauthorized user and notify owner with approve/deny buttons."""
+    user = update.effective_user
+    chat = update.effective_chat
+    text = update.message.text or ''
+    preview = text if len(text) <= 1000 else text[:1000] + '…(已截斷)'
+
+    await update.message.reply_text(
+        '🚫 您尚未授權，已通知管理員，請稍候。',
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    owner_chat_id = os.environ.get('OWNER_CHAT_ID')
+    if not owner_chat_id:
+        logger.warning(
+            f'Unauthorized user {user.id if user else "?"} but OWNER_CHAT_ID not set'
+        )
+        return
+
+    name = (user.full_name if user else '') or (user.first_name if user else '') or '(無名稱)'
+    username = f'@{user.username}' if user and user.username else '(無 @)'
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton('✅ 授權', callback_data=f'auth:approve:{user.id}:{chat.id}'),
+        InlineKeyboardButton('❌ 拒絕', callback_data=f'auth:deny:{user.id}:{chat.id}'),
+    ]])
+    msg = (
+        f'🔔 未授權使用者請求加入\n'
+        f'名字：{name}\n'
+        f'帳號：{username}\n'
+        f'ID：{user.id}\n'
+        f'\n訊息內容：\n{preview}'
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=int(owner_chat_id),
+            text=msg,
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.error(f'Failed to notify owner: {e}', exc_info=True)
+
+
+async def authorize_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle owner's approve/deny click on the unauthorized-user notification."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = (query.data or '').split(':')
+    if len(parts) != 4 or parts[0] != 'auth':
+        return
+
+    _, action, user_id_s, chat_id_s = parts
+    try:
+        target_user_id = int(user_id_s)
+        target_chat_id = int(chat_id_s)
+    except ValueError:
+        return
+
+    owner_chat_id = os.environ.get('OWNER_CHAT_ID')
+    if owner_chat_id and str(query.from_user.id) != str(owner_chat_id):
+        await query.answer('您無權使用此按鈕。', show_alert=True)
+        return
+
+    original_text = query.message.text or ''
+
+    if action == 'approve':
+        whitelist.add_user(target_user_id)
+        await query.edit_message_text(
+            text=original_text + f'\n\n✅ 已授權（user {target_user_id}）',
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text='✅ 管理員已核准您的請求，請重新傳送您的報價單。',
+            )
+        except Exception as e:
+            logger.error(f'Failed to notify approved user: {e}', exc_info=True)
+    elif action == 'deny':
+        await query.edit_message_text(
+            text=original_text + f'\n\n❌ 已拒絕（user {target_user_id}）',
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text='❌ 管理員未核准您的請求。',
+            )
+        except Exception as e:
+            logger.error(f'Failed to notify denied user: {e}', exc_info=True)
+
+
 # ── Helper functions ──
 
 async def _maybe_ask_move_then_upload(
@@ -405,6 +519,8 @@ def main():
 
     app.add_handler(CommandHandler('start', start_command))
     app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('whoami', whoami_command))
+    app.add_handler(CallbackQueryHandler(authorize_callback, pattern=r'^auth:'))
     app.add_handler(conv_handler)
 
     logger.info('Bot started, polling...')
